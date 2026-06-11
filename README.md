@@ -1,44 +1,50 @@
-# Agora Conversational AI — Custom LLM Recipe (Python)
+# Agora Conversational AI — MCP Recipe (Python)
 
-The **custom-llm** recipe in the Agora Conversational AI recipes family. Bring your
-own LLM to Agora's voice pipeline: the agent's LLM stage is pointed at your own
-OpenAI-compatible `POST /chat/completions` endpoint instead of a managed model.
-STT (Deepgram) and TTS (MiniMax) stay Agora-managed.
+The **mcp** recipe in the Agora Conversational AI recipes family. Agora cloud
+orchestrates a tool on a separate MCP server: the managed keyless OpenAI vendor
+emits a tool call, Agora invokes the `mcp/` FastMCP server (which must be
+publicly reachable), returns the result, and the LLM speaks it. STT (Deepgram)
+and TTS (MiniMax) stay Agora-managed.
 
-This repo ships a **zero-key mock** LLM endpoint so you can run the full
-STT → custom LLM → TTS pipeline immediately, then replace the mock with your own
-model.
+This recipe is **zero-key**: OpenAI is Agora-managed (no `OPENAI_API_KEY`
+needed), and the `mcp/` tool is a mock (`get_time`) that needs no external
+credentials. Replace it with your own tools.
+
+**Distinct from `recipe-agent-tool-calling`**: in that recipe the tools run
+inside the `llm/` endpoint. Here Agora orchestrates them on a separate MCP
+server — the `mcp/` service is a standalone FastMCP HTTP server, and Agora
+cloud calls it directly at `MCP_ENDPOINT`.
 
 ## Prerequisites
 
 - [Python 3.8+](https://www.python.org/)
 - [Bun](https://bun.sh/)
-- [ngrok](https://ngrok.com/) (or any tunnel to expose localhost)
-- Agora App ID + App Certificate (the [Agora CLI](https://github.com/AgoraIO/cli) makes this easy)
+- [ngrok](https://ngrok.com/) (expose the MCP server publicly)
+- Agora App ID + App Certificate ([Agora CLI](https://github.com/AgoraIO/cli) makes this easy)
 
 ## Run it
 
 ```bash
-# 1. Install + create both Python venvs
+# 1. Install Python venvs + web deps
 bun run setup
 
-# 2. Add Agora credentials (CLI), or edit server/.env.local by hand
+# 2. Add Agora credentials to server/.env.local
 agora login
-agora project use <your-project>          # select which project to use (you may have several)
-agora project env write server/.env.local # writes App ID/Certificate; keeps your CUSTOM_LLM_* lines
+agora project use <your-project>
+agora project env write server/.env.local
 
-# 3. Expose the custom LLM endpoint publicly (Agora cloud calls it directly)
+# 3. Expose the MCP server publicly — Agora cloud calls it directly
 ngrok http 8001
 
-# 4. Add the tunnel URL to server/.env.local (use whatever domain ngrok prints —
-#    today that is usually *.ngrok-free.dev)
-#    CUSTOM_LLM_URL=https://<your-tunnel>.ngrok-free.dev/chat/completions
+# 4. Set MCP_ENDPOINT in server/.env.local (use whatever domain ngrok prints)
+#    MCP_ENDPOINT=https://<your-tunnel>.ngrok-free.dev/mcp
 
 # 5. Run all three services
 bun run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) → **Start Conversation** → speak.
+Open [http://localhost:3000](http://localhost:3000) → **Start Conversation** →
+ask "what time is it?".
 
 ## Architecture
 
@@ -47,30 +53,36 @@ Browser (localhost:3000)
   │  fetch /api/*
   ▼
 Next.js  ──rewrite──▶  Agent backend  (server/, localhost:8000)
-                          │  starts agent session (CustomLLM vendor)
+                          │  starts agent session (OpenAI vendor + mcp_servers)
                           ▼
                        Agora ConvoAI Cloud
-                          │  POST <CUSTOM_LLM_URL>   (Authorization: Bearer)
+                          │  user speech → Deepgram STT (managed)
+                          │  OpenAI LLM (managed, keyless) → emits tool call
+                          │  POST <MCP_ENDPOINT>   (streamable-http)
                           ▼
-                       Custom LLM endpoint  (llm/, localhost:8001)
+                       MCP server  (mcp/, localhost:8001)
                           ▲  public via ngrok tunnel
+                          │  returns tool result → LLM speaks it
+                          ▼
+                       Agora ConvoAI Cloud → MiniMax TTS (managed) → user hears speech
+                                          → RTM transcript / metrics → web UI
 ```
 
 The browser only ever calls Next `/api/*`, which rewrites to the agent backend.
-The agent backend owns Agora tokens and agent lifecycle. The **custom LLM
-endpoint** is separate because Agora cloud — not the browser — calls it, so it
-must be publicly reachable. See [ARCHITECTURE.md](./ARCHITECTURE.md).
+The agent backend owns Agora tokens and agent lifecycle. The **MCP server** is
+separate because Agora cloud — not the browser — calls it, so it must be
+publicly reachable. See [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Project structure
 
 ```
-agent-recipes-python/
-├── server/   # Agent backend (:8000) — tokens + agent lifecycle, CustomLLM vendor
-│   ├── src/{server.py, agent.py}
+recipe-agent-mcp/
+├── server/   # Agent backend (:8000) — tokens + agent lifecycle, OpenAI vendor + mcp_servers
+│   ├── src/{server.py, agent.py, mcp_config.py}
 │   └── scripts/run_fake_server.py
-├── llm/      # Custom LLM endpoint (:8001) — OpenAI-compatible mock, no agora deps
-│   └── src/custom_llm_server.py
-├── web/      # Shared Next.js frontend (:3000)
+├── mcp/      # MCP server (:8001) — FastMCP streamable-http, no agora deps
+│   └── src/mcp_server.py
+├── web/      # Next.js frontend (:3000)
 └── package.json
 ```
 
@@ -80,45 +92,43 @@ Backend env file: [`server/.env.example`](server/.env.example).
 
 | Variable | Required | Default | Notes |
 | --- | :---: | :---: | --- |
-| `AGORA_APP_ID` | ✅ | — | Agora Console → Project → App ID |
-| `AGORA_APP_CERTIFICATE` | ✅ | — | Agora Console → Project → App Certificate (server only) |
-| `CUSTOM_LLM_URL` | ✅ | — | **Public** chat-completions URL of your `llm/` endpoint. Agora cloud calls it; cannot be `localhost`. |
-| `CUSTOM_LLM_API_KEY` | ✅ | `any-key-here` | Forwarded by Agora cloud as `Authorization: Bearer`. Required by the `CustomLLM` vendor. |
-| `CUSTOM_LLM_MODEL` |  | `mock-model` | Model name passed to your endpoint |
-| `AGENT_GREETING` |  | built-in | Optional opening line override |
-| `PORT` |  | `8000` | Agent backend port |
-| `CUSTOM_LLM_PORT` |  | `8001` | Port for the custom LLM endpoint — lives in **`llm/.env.local`**, not `server/`'s |
-| `AGENT_BACKEND_URL` (web deploy) | ✅ | — | Required in a deployed `web` app when proxying to the backend |
+| `AGORA_APP_ID` | Yes | — | Agora Console → Project → App ID |
+| `AGORA_APP_CERTIFICATE` | Yes | — | Agora Console → Project → App Certificate |
+| `MCP_ENDPOINT` | Yes | — | **Public** URL of your `mcp/` server (e.g. `https://<tunnel>/mcp`). Agora cloud calls it; cannot be `localhost`. |
+| `OPENAI_MODEL` | | `gpt-4o-mini` | Model name for the managed OpenAI vendor |
+| `OPENAI_API_KEY` | | — | Optional — Agora manages the OpenAI key (keyless by default) |
+| `AGENT_GREETING` | | built-in | Optional opening line override |
+| `PORT` | | `8000` | Agent backend port |
+| `MCP_PORT` (mcp/.env.local) | | `8001` | Port for the MCP server |
+| `AGENT_BACKEND_URL` (web deploy) | Yes (deploy) | — | Required when deploying `web` |
 
 ## Commands
 
 ```bash
-bun run setup            # install web deps + create server/ and llm/ venvs
-bun run dev              # run llm (:8001) + backend (:8000) + web (:3000)
+bun run setup            # install web deps + create server/ and mcp/ venvs
+bun run dev              # run mcp (:8001) + backend (:8000) + web (:3000)
 
 bun run doctor           # prerequisite check (no creds needed)
-bun run doctor:local     # + .env.local + credentials + CUSTOM_LLM_URL checks
+bun run doctor:local     # + .env.local + credentials + MCP_ENDPOINT checks
 
 bun run verify           # web-only gate (no Agora creds needed)
-bun run verify:local     # full local gate: backend compile + smoke tests + web build
+bun run verify:local     # full local gate: backend compile + web build
 bun run clean            # remove venvs and build artifacts
 ```
 
 ## Replacing the mock
 
-Edit `get_mock_response()` in [`llm/src/custom_llm_server.py`](llm/src/custom_llm_server.py).
-The endpoint must keep speaking the OpenAI streaming `/chat/completions` contract
-(see [`llm/README.md`](llm/README.md)). A production endpoint should also validate
-the `Authorization: Bearer` header.
+Add tools in [`mcp/src/mcp_server.py`](mcp/src/mcp_server.py). Each function
+decorated with `@mcp.tool()` is automatically registered. The mock `get_time`
+tool needs no external credentials — replace or extend it with your own logic.
 
 ## Troubleshooting
 
 | Problem | Fix |
 | --- | --- |
-| Agent starts but never speaks | `CUSTOM_LLM_URL` is not public or omits `/chat/completions`. Use your ngrok URL. |
+| Agent starts but never responds to "what time is it?" | `MCP_ENDPOINT` is not public or the `/mcp` path is wrong. Use your ngrok URL. |
 | `doctor:local` warns about localhost | Replace the local URL with your public tunnel URL. |
-| Local calls fail / hang under a global proxy (Clash, etc.) | Your proxy is routing loopback through itself. Configure it to send `127.0.0.1`, `localhost`, and RFC-1918 ranges DIRECT (don't disable the proxy entirely). |
-| `Missing llm/venv` during verify | Run `bun run setup` (creates both venvs). |
+| Local calls fail under a global proxy | Configure the proxy to send `127.0.0.1` and `localhost` DIRECT. |
 
 ## License
 

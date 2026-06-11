@@ -1,26 +1,27 @@
-# Agora Agent Backend — Custom LLM Recipe
+# Agora Agent Backend — MCP Recipe
 
 FastAPI service that owns Agora token generation and agent session lifecycle for
-the custom-llm recipe. It is the service the web client reaches through the
-Next.js `/api/*` rewrite proxy (port 8000).
+the mcp recipe. It is the service the web client reaches through the Next.js
+`/api/*` rewrite proxy (port 8000).
 
 ## What's different from the base quickstart
 
-The LLM stage uses the SDK's `CustomLLM` vendor instead of a managed
-`OpenAI(model="gpt-4o-mini")`. It points the agent at your own OpenAI-compatible
-endpoint (the `llm/` server in this repo) via `CUSTOM_LLM_URL`. STT (Deepgram)
-and TTS (MiniMax) remain Agora-managed.
+The LLM stage uses the SDK's managed `OpenAI` vendor (keyless — Agora manages
+the OpenAI key) with `mcp_servers` pointing at the public `mcp/` server. When
+the LLM emits a tool call, Agora cloud POSTs to `MCP_ENDPOINT` (streamable-http
+transport), receives the tool result, and the LLM speaks it. There is no `llm/`
+endpoint in this recipe. STT (Deepgram) and TTS (MiniMax) remain Agora-managed.
 
 ## Run
 
-Use the repo-root `README.md` for the full local flow (`bun run dev`). To work on
-this module directly:
+Use the repo-root `README.md` for the full local flow (`bun run dev`). To work
+on this module directly:
 
 ```bash
 cd server
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-python src/server.py
+MCP_ENDPOINT=https://<your-tunnel>/mcp python src/server.py
 ```
 
 ## Environment
@@ -28,14 +29,16 @@ python src/server.py
 `server/.env.example` is the template. Required:
 
 - `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE` — Agora project credentials.
-- `CUSTOM_LLM_URL` — the **public** chat-completions URL of your `llm/` endpoint
-  (e.g. `https://<tunnel>/chat/completions`). Agora cloud calls this directly, so
-  it cannot be `localhost`.
-- `CUSTOM_LLM_API_KEY` — forwarded by Agora cloud as `Authorization: Bearer`.
-  Required by the `CustomLLM` vendor.
+- `MCP_ENDPOINT` — the **public** URL of your `mcp/` server (e.g.
+  `https://<tunnel>/mcp`). Agora cloud calls this directly, so it cannot be
+  `localhost`. Expose the `mcp/` server on port 8001 via ngrok first.
 
-Optional: `CUSTOM_LLM_MODEL` (default `mock-model`), `AGENT_GREETING`, `PORT`
-(default `8000`).
+Optional:
+- `OPENAI_MODEL` (default `gpt-4o-mini`) — model name for the managed vendor.
+- `OPENAI_API_KEY` — Agora manages the key by default; set this only if you
+  want to supply your own.
+- `AGENT_GREETING` — override the agent's opening line.
+- `PORT` (default `8000`) — agent backend port.
 
 ## API
 
@@ -43,6 +46,14 @@ Optional: `CUSTOM_LLM_MODEL` (default `mock-model`), `AGENT_GREETING`, `PORT`
 - `POST /startAgent` — start an agent session
 - `POST /stopAgent` — stop an agent session
 
-The repo-root `bun run verify:local:fastapi` exercises these routes through the
-Next proxy using a fake agent (`scripts/run_fake_server.py`), so no live Agora
+The repo-root `bun run verify:web:api` exercises these routes through the Next
+proxy using a fake agent (`scripts/run_fake_server.py`), so no live Agora
 session is required.
+
+## Key files
+
+| File | Purpose |
+| --- | --- |
+| `src/server.py` | FastAPI app, routes |
+| `src/agent.py` | Agent wrapper — OpenAI vendor + mcp_servers config |
+| `src/mcp_config.py` | Pure builder for the `mcp_servers` list (testable) |
