@@ -1,11 +1,13 @@
 """
-Agent — Custom LLM Recipe
+Agent — MCP Recipe
 
-High-level API for managing Agora Conversational AI Agents with a Custom LLM.
+High-level API for managing Agora Conversational AI Agents with managed OpenAI
+and MCP tool calling. Agora cloud orchestrates the MCP server — the managed
+OpenAI LLM emits a tool call, Agora invokes the separate mcp/ server (public
+MCP_ENDPOINT), returns the result, and the LLM speaks it.
 
-Instead of using the built-in OpenAI vendor, this recipe configures the agent
-to use a custom LLM endpoint (your own proxy server) that is compatible with
-the OpenAI Chat Completions API format.
+OPENAI_API_KEY is optional — Agora manages the OpenAI key (keyless).
+MCP_ENDPOINT must be PUBLIC — Agora cloud (not this server) calls it.
 """
 import logging
 import os
@@ -14,64 +16,48 @@ from typing import Any, Dict, Optional
 
 from agora_agent import Area, AsyncAgora
 from agora_agent.agentkit import Agent as AgoraAgent
-from agora_agent.agentkit.vendors import CustomLLM, DeepgramSTT, MiniMaxTTS
+from agora_agent.agentkit.vendors import OpenAI, DeepgramSTT, MiniMaxTTS
+from mcp_config import build_mcp_servers
 
 logger = logging.getLogger("uvicorn.error")
 
-CUSTOM_LLM_PROMPT = """You are a helpful AI assistant powered by a custom LLM integration \
-with Agora's Conversational AI Engine.
-
-You can answer questions, have conversations, and help users with various tasks. \
-Keep most replies to one or two sentences unless the user explicitly asks for more detail.
-"""
+AGENT_GREETING = "Hi! Ask me what time it is."
 
 
 class Agent:
     """
-    High-level wrapper for Agora Conversational AI Agent with Custom LLM.
+    High-level wrapper for Agora Conversational AI Agent with managed OpenAI
+    and MCP tool calling.
 
-    The key difference from the quickstart is that this uses the OpenAI vendor
-    with a custom `base_url` pointing to your own OpenAI-compatible endpoint
-    (the custom_llm_server.py proxy). The Agora cloud will call your proxy
-    for chat completions instead of calling OpenAI directly.
+    The managed OpenAI vendor is keyless — Agora handles the API key. When the
+    user asks what time it is, the LLM emits a tool call, Agora invokes the
+    mcp/ server at MCP_ENDPOINT, and the result is returned to the LLM so it
+    can speak the answer.
 
-    IMPORTANT: The custom LLM URL must be publicly accessible for the Agora
-    Conversational AI Engine (cloud) to reach it. For local development, use
-    a tunnel (ngrok, Cloudflare Tunnel) or GitHub Codespaces with public ports.
+    IMPORTANT: MCP_ENDPOINT must be publicly accessible for the Agora
+    Conversational AI Engine (cloud) to reach the mcp/ server. For local
+    development, use a tunnel (ngrok) — e.g. ngrok http 8001 — and paste
+    the public URL here.
     """
 
     def __init__(self):
         self.app_id = os.getenv("AGORA_APP_ID")
         self.app_certificate = os.getenv("AGORA_APP_CERTIFICATE")
-        self.greeting = os.getenv(
-            "AGENT_GREETING",
-            "Hi there! I'm your AI assistant powered by a custom LLM. How can I help?",
-        )
+        self.greeting = os.getenv("AGENT_GREETING", AGENT_GREETING)
 
-        # Custom LLM configuration.
-        # CUSTOM_LLM_URL is the FULL OpenAI-compatible chat-completions URL and must be
-        # PUBLICLY reachable: Agora cloud (not this backend) calls it. For local dev,
-        # expose the llm/ server on port 8001 via ngrok and paste that URL here.
-        # There is intentionally no localhost default: a localhost URL would let the
-        # agent "start" while its LLM calls silently fail cloud-side.
-        self.custom_llm_url = os.getenv("CUSTOM_LLM_URL")
-        self.custom_llm_api_key = os.getenv("CUSTOM_LLM_API_KEY", "any-key-here")
-        self.custom_llm_model = os.getenv("CUSTOM_LLM_MODEL", "mock-model")
+        # OpenAI is Agora-managed (keyless). OPENAI_API_KEY optional.
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        # MCP_ENDPOINT must be PUBLIC — Agora cloud calls the mcp/ server directly.
+        self.mcp_endpoint = os.getenv("MCP_ENDPOINT")
+        if not self.mcp_endpoint:
+            raise ValueError(
+                "MCP_ENDPOINT is required (public URL of your mcp/ server, "
+                "e.g. https://<tunnel>/mcp)"
+            )
 
         if not self.app_id or not self.app_certificate:
             raise ValueError("AGORA_APP_ID and AGORA_APP_CERTIFICATE are required")
-
-        if not self.custom_llm_url:
-            raise ValueError(
-                "CUSTOM_LLM_URL is required (the public chat-completions URL of your "
-                "custom LLM endpoint, e.g. https://<tunnel>/chat/completions)"
-            )
-
-        if not self.custom_llm_api_key:
-            # CustomLLM rejects a missing api_key, and base_url is only valid with a key.
-            raise ValueError(
-                "CUSTOM_LLM_API_KEY is required when using a custom LLM endpoint"
-            )
 
         self.client = AsyncAgora(
             area=Area.US,
@@ -89,7 +75,7 @@ class Agent:
         user_uid: int,
         output_audio_codec: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Start agent with Custom LLM vendor chain."""
+        """Start agent with managed OpenAI + MCP tool calling."""
         if not channel_name or not str(channel_name).strip():
             raise ValueError("channel_name is required and cannot be empty")
         if agent_uid <= 0:
@@ -99,32 +85,17 @@ class Agent:
 
         name = f"agent_{channel_name}_{agent_uid}_{int(time.time())}"
 
-        # ============================================================
-        # KEY DIFFERENCE: Use the SDK's CustomLLM vendor
-        # ============================================================
-        # The base quickstart uses a managed `OpenAI(model="gpt-4o-mini")`.
-        # This recipe instead points the LLM stage at our own OpenAI-compatible
-        # endpoint (the llm/ server) via the purpose-built `CustomLLM` vendor.
-        # CustomLLM stamps `vendor: "custom"` in the wire config and requires
-        # both base_url and api_key. Your endpoint can then:
-        # - Add custom preprocessing (RAG, context injection)
-        # - Route to different models dynamically
-        # - Add logging and analytics
-        # - Implement custom tool calling
-        # ============================================================
-        llm = CustomLLM(
-            base_url=self.custom_llm_url,
-            api_key=self.custom_llm_api_key,
-            model=self.custom_llm_model,
+        llm = OpenAI(
+            api_key=self.openai_api_key,
+            model=self.openai_model,
+            system_messages=[{"role": "system", "content": (
+                "You are a helpful voice assistant. When the user asks what time it is, "
+                "you MUST call the get_time tool, then say the time out loud. Do not guess."
+            )}],
+            mcp_servers=build_mcp_servers(self.mcp_endpoint),
             greeting_message=self.greeting,
-            failure_message="Please wait a moment.",
-            max_history=15,
-            max_tokens=1024,
-            temperature=0.7,
-            top_p=0.95,
         )
 
-        # STT and TTS remain the same as the quickstart
         stt = DeepgramSTT(model="nova-3", language="en")
         tts = MiniMaxTTS(model="speech_2_6_turbo", voice_id="English_captivating_female1")
 
@@ -138,7 +109,6 @@ class Agent:
 
         agora_agent = AgoraAgent(
             name=name,
-            instructions=CUSTOM_LLM_PROMPT,
             greeting=self.greeting,
             failure_message="Please wait a moment.",
             max_history=50,
@@ -182,18 +152,18 @@ class Agent:
         )
 
         logger.info(
-            "Starting Custom LLM agent channel=%s agent_uid=%s user_uid=%s llm_url=%s",
+            "Starting MCP agent channel=%s agent_uid=%s user_uid=%s mcp_endpoint=%s",
             channel_name,
             agent_uid,
             user_uid,
-            self.custom_llm_url,
+            self.mcp_endpoint,
         )
 
         try:
             agent_id = await session.start()
         except Exception:
             logger.exception(
-                "Failed to start Custom LLM agent channel=%s agent_uid=%s user_uid=%s",
+                "Failed to start MCP agent channel=%s agent_uid=%s user_uid=%s",
                 channel_name,
                 agent_uid,
                 user_uid,
@@ -204,7 +174,7 @@ class Agent:
         self._sessions[agent_id] = session
 
         logger.info(
-            "Started Custom LLM agent agent_id=%s channel=%s",
+            "Started MCP agent agent_id=%s channel=%s",
             agent_id,
             channel_name,
         )
