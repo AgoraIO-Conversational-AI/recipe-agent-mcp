@@ -24,11 +24,11 @@ export function QuickstartPreCallCard({
 			}}
 		>
 			<h1 className="text-[28px] font-medium leading-[1.2] text-white">
-				Custom LLM Recipe
+				MCP Recipe
 			</h1>
 			<p className="mt-[14px] text-sm font-medium leading-6 text-muted-foreground">
-				Bring your own LLM to Agora&apos;s Conversational AI Engine via a custom
-				OpenAI-compatible proxy server.
+				Ask &quot;what time is it?&quot; &mdash; the model calls a tool on a separate MCP
+				server that Agora invokes for you.
 			</p>
 
 			<Button
