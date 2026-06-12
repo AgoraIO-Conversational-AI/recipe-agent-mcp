@@ -7,10 +7,12 @@ the mcp recipe. It is the service the web client reaches through the Next.js
 ## What's different from the base quickstart
 
 The LLM stage uses the SDK's managed `OpenAI` vendor (keyless — Agora manages
-the OpenAI key) with `mcp_servers` pointing at the public `mcp/` server. When
+the OpenAI key) with `mcp_servers` pointing at the public `MCP_ENDPOINT`. When
 the LLM emits a tool call, Agora cloud POSTs to `MCP_ENDPOINT` (streamable-http
-transport), receives the tool result, and the LLM speaks it. There is no `llm/`
-endpoint in this recipe. STT (Deepgram) and TTS (MiniMax) remain Agora-managed.
+transport), receives the tool result, and the LLM speaks it. The FastMCP server
+is mounted at `/mcp` in this same process — no separate service or port needed.
+There is no `llm/` endpoint in this recipe. STT (Deepgram) and TTS (MiniMax)
+remain Agora-managed.
 
 ## Run
 
@@ -29,9 +31,9 @@ MCP_ENDPOINT=https://<your-tunnel>/mcp python src/server.py
 `server/.env.example` is the template. Required:
 
 - `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE` — Agora project credentials.
-- `MCP_ENDPOINT` — the **public** URL of your `mcp/` server (e.g.
+- `MCP_ENDPOINT` — the **public** URL of the `/mcp` endpoint (e.g.
   `https://<tunnel>/mcp`). Agora cloud calls this directly, so it cannot be
-  `localhost`. Expose the `mcp/` server on port 8001 via ngrok first.
+  `localhost`. Use `ngrok http 8000` to expose the backend publicly.
 
 Optional:
 - `OPENAI_MODEL` (default `gpt-4o-mini`) — model name for the managed vendor.
@@ -57,3 +59,4 @@ session is required.
 | `src/server.py` | FastAPI app, routes |
 | `src/agent.py` | Agent wrapper — OpenAI vendor + mcp_servers config |
 | `src/mcp_config.py` | Pure builder for the `mcp_servers` list (testable) |
+| `src/mcp_server.py` | FastMCP server with tools; mounted at `/mcp` in `server.py` |

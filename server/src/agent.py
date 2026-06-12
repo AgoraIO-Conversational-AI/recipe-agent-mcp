@@ -36,7 +36,7 @@ class Agent:
 
     IMPORTANT: MCP_ENDPOINT must be publicly accessible for the Agora
     Conversational AI Engine (cloud) to reach the mcp/ server. For local
-    development, use a tunnel (ngrok) — e.g. ngrok http 8001 — and paste
+    development, use a tunnel (ngrok) — e.g. ngrok http 8000 — and paste
     the public URL here.
     """
 

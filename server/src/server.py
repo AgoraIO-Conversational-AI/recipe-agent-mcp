@@ -27,6 +27,22 @@ from agent import Agent
 
 logger = logging.getLogger("uvicorn.error")
 
+# --- MCP mount (single-process): serve the FastMCP server in this same uvicorn ---
+from contextlib import asynccontextmanager
+import mcp_server  # exposes `mcp = FastMCP(...)`
+
+# FastMCP serves the streamable-HTTP app at its default /mcp path; mounting the app
+# at root lands the public endpoint at exactly /mcp (no trailing-slash redirect).
+_mcp_asgi = mcp_server.mcp.streamable_http_app()
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    # Starlette mount() does not auto-run a sub-app lifespan, so run the FastMCP
+    # session manager here for the life of the server process.
+    async with mcp_server.mcp.session_manager.run():
+        yield
+
 
 def _log_route_error(route: str, exc: Exception, **context) -> None:
     """Log route failures with safe request context and a traceback."""
@@ -62,6 +78,7 @@ app = FastAPI(
     title="Agora MCP Recipe Service",
     version="1.0.0",
     description="Agora Conversational AI with MCP tool calling",
+    lifespan=_lifespan,
 )
 
 app.add_middleware(
@@ -190,6 +207,11 @@ async def stop_agent(request: StopAgentRequest):
 
 
 app.include_router(router)
+
+# Mount the FastMCP streamable-HTTP server in-process (serves its own /mcp path).
+# Agora cloud reaches it at <public-url>/mcp — same process, same port as the
+# token endpoints. Mounted last, so the server's own routes match first.
+app.mount("/", _mcp_asgi)
 
 
 if __name__ == "__main__":

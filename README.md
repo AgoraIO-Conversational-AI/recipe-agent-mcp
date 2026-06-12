@@ -4,32 +4,31 @@
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/)
 [![Bun](https://img.shields.io/badge/bun-latest-black)](https://bun.sh/)
 
-The **mcp** recipe in the Agora Conversational AI recipes family. Agora cloud
-orchestrates a tool on a separate MCP server: the managed keyless OpenAI vendor
-emits a tool call, Agora invokes the `mcp/` FastMCP server (which must be
-publicly reachable), returns the result, and the LLM speaks it. STT (Deepgram)
-and TTS (MiniMax) stay Agora-managed.
+The **mcp** recipe in the Agora Conversational AI recipes family. The managed
+keyless OpenAI vendor emits a tool call, Agora invokes the FastMCP server
+mounted at `/mcp` in the same backend process, returns the result, and the LLM
+speaks it. STT (Deepgram) and TTS (MiniMax) stay Agora-managed.
 
 This recipe is **zero-key**: OpenAI is Agora-managed (no `OPENAI_API_KEY`
-needed), and the `mcp/` tool is a mock (`get_time`) that needs no external
-credentials. Replace it with your own tools.
+needed), and the tool is a mock (`get_time`) that needs no external credentials.
+Replace it with your own tools in `server/src/mcp_server.py`.
 
 **Distinct from `recipe-agent-tool-calling`**: in that recipe the tools run
-inside the `llm/` endpoint. Here Agora orchestrates them on a separate MCP
-server — the `mcp/` service is a standalone FastMCP HTTP server, and Agora
-cloud calls it directly at `MCP_ENDPOINT`.
+inside the `llm/` endpoint. Here Agora orchestrates them via the MCP protocol —
+the managed OpenAI vendor issues a tool call, Agora invokes `MCP_ENDPOINT`, and
+the result flows back to the LLM.
 
 ## Prerequisites
 
 - [Python 3.10+](https://www.python.org/)
 - [Bun](https://bun.sh/)
 - [Agora CLI](https://github.com/AgoraIO/cli) — makes generating an App ID + App Certificate easy
-- [ngrok](https://ngrok.com/) — the MCP server must be publicly reachable so Agora cloud can call it
+- [ngrok](https://ngrok.com/) — the backend (including the `/mcp` endpoint) must be publicly reachable so Agora cloud can call it
 
 ## Run It
 
 ```bash
-# 1. Install Python venvs + web deps
+# 1. Install Python venv + web deps
 bun run setup
 
 # 2. Add Agora credentials to server/.env.local
@@ -37,13 +36,13 @@ agora login
 agora project use <your-project>
 agora project env write server/.env.local
 
-# 3. Expose the MCP server publicly — Agora cloud calls it directly
-ngrok http 8001
+# 3. Expose the backend publicly — Agora cloud calls /mcp on this tunnel
+ngrok http 8000
 
 # 4. Set MCP_ENDPOINT in server/.env.local (use whatever domain ngrok prints)
 #    MCP_ENDPOINT=https://<your-tunnel>.ngrok-free.dev/mcp
 
-# 5. Run all three services
+# 5. Run the backend and the web frontend
 bun run dev
 ```
 
@@ -53,30 +52,33 @@ ask "what time is it?".
 ### Working from a clone
 
 If you cloned this repo (rather than scaffolding via the Agora CLI), the steps
-above are complete as written: `bun run setup` creates both Python venvs and
-installs web dependencies, then `bun run dev` brings up all three services. You
+above are complete as written: `bun run setup` creates the Python venv and
+installs web dependencies, then `bun run dev` brings up both services. You
 still need Agora credentials in `server/.env.local` and a public `MCP_ENDPOINT`
 tunnel before a conversation can connect.
 
 Services:
 
 - Frontend — http://localhost:3000
-- Backend — http://localhost:8000
-- MCP server — http://localhost:8001
+- Backend + MCP server — http://localhost:8000 (including `/mcp`)
 - API docs — http://localhost:8000/docs
 
 ## Deploy
 
-Deploy `web` (Next.js) and `server` (a reachable FastAPI backend). Set
-`AGENT_BACKEND_URL` in the web deployment so the Next rewrites reach the backend.
+Deploy `web` (Next.js) and `server` (a single publicly reachable FastAPI
+process that also serves `/mcp`, so Agora cloud can reach `MCP_ENDPOINT`).
+Set `AGENT_BACKEND_URL` in the web deployment so the Next rewrites reach the
+backend.
 
-A multi-process Docker image is published to
-`ghcr.io/AgoraIO-Conversational-AI/recipe-agent-mcp` on `v*` tags. It bundles
-the agent backend (:8000) **and** the MCP server (:8001) in one image. To host
-the single-image demo, expose :8001 publicly and point `MCP_ENDPOINT` at it. A
-local `docker run` still needs a tunnel, because Agora cloud cannot reach
-`localhost`. The bundled mock MCP server is a development stand-in you replace
-with your own tools.
+A single-process Docker image is published to
+`ghcr.io/AgoraIO-Conversational-AI/recipe-agent-mcp` on `v*` tags. It runs the
+agent backend and the FastMCP server in one process on port 8000. Expose port
+8000 publicly and point `MCP_ENDPOINT` at `<public-url>/mcp`.
+
+**Co-public caveat**: because the `/mcp` endpoint is served on the same port as
+the token endpoints, deploying this image publicly also exposes `/mcp`. For
+production use, add authentication to the MCP server or deploy behind a gateway
+that restricts `/mcp` access to Agora cloud IPs.
 
 ## Environment variables
 
@@ -86,31 +88,30 @@ Backend env file: [`server/.env.example`](server/.env.example).
 | --- | :---: | :---: | --- |
 | `AGORA_APP_ID` | Yes | — | Agora Console → Project → App ID |
 | `AGORA_APP_CERTIFICATE` | Yes | — | Agora Console → Project → App Certificate |
-| `MCP_ENDPOINT` | Yes | — | **Public** URL of your `mcp/` server (e.g. `https://<tunnel>/mcp`). Agora cloud calls it; cannot be `localhost`. |
+| `MCP_ENDPOINT` | Yes | — | **Public** URL of the `/mcp` endpoint (e.g. `https://<tunnel>/mcp`). Agora cloud calls it; cannot be `localhost`. |
 | `OPENAI_MODEL` | | `gpt-4o-mini` | Model name for the managed OpenAI vendor |
 | `OPENAI_API_KEY` | | — | Optional — Agora manages the OpenAI key (keyless by default) |
 | `AGENT_GREETING` | | built-in | Optional opening line override |
 | `PORT` | | `8000` | Agent backend port |
-| `MCP_PORT` (mcp/.env.local) | | `8001` | Port for the MCP server |
 | `AGENT_BACKEND_URL` (web deploy) | Yes (deploy) | — | Required when deploying `web` |
 
 ## Commands
 
 ```bash
-bun run setup            # install web deps + create server/ and mcp/ venvs
-bun run dev              # run mcp (:8001) + backend (:8000) + web (:3000)
+bun run setup            # install web deps + create server/ venv
+bun run dev              # run backend (:8000, including /mcp) + web (:3000)
 
 bun run doctor           # prerequisite check (no creds needed)
 bun run doctor:local     # + .env.local + credentials + MCP_ENDPOINT checks
 
 bun run verify           # web-only gate (no Agora creds needed)
 bun run verify:local     # full local gate: backend compile + web build
-bun run clean            # remove venvs and build artifacts
+bun run clean            # remove venv and build artifacts
 ```
 
-Tests run standalone (no Agora cloud needed): `pytest` in `server/` and `mcp/`,
-plus `bun run verify` in `web/`. CI runs them on Linux/macOS/Windows × Python
-3.10 & 3.13.
+Tests run standalone (no Agora cloud needed): `pytest` in `server/`, plus
+`bun run verify` in `web/`. CI runs them on Linux/macOS/Windows × Python 3.10 &
+3.13.
 
 ## Architecture
 
@@ -120,14 +121,14 @@ Browser (localhost:3000)
   ▼
 Next.js  ──rewrite──▶  Agent backend  (server/, localhost:8000)
                           │  starts agent session (OpenAI vendor + mcp_servers)
+                          │  also serves FastMCP at /mcp (same process)
                           ▼
                        Agora ConvoAI Cloud
                           │  user speech → Deepgram STT (managed)
                           │  OpenAI LLM (managed, keyless) → emits tool call
                           │  POST <MCP_ENDPOINT>   (streamable-http)
                           ▼
-                       MCP server  (mcp/, localhost:8001)
-                          ▲  public via ngrok tunnel
+                       FastMCP server at /mcp  (same process, same port)
                           │  returns tool result → LLM speaks it
                           ▼
                        Agora ConvoAI Cloud → MiniMax TTS (managed) → user hears speech
@@ -135,9 +136,9 @@ Next.js  ──rewrite──▶  Agent backend  (server/, localhost:8000)
 ```
 
 The browser only ever calls Next `/api/*`, which rewrites to the agent backend.
-The agent backend owns Agora tokens and agent lifecycle. The **MCP server** is
-separate because Agora cloud — not the browser — calls it, so it must be
-publicly reachable. See [ARCHITECTURE.md](./ARCHITECTURE.md).
+The agent backend owns Agora tokens and agent lifecycle. The **FastMCP server**
+is mounted in the same process on the same port — `ngrok http 8000` exposes
+both. See [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## What You Get
 
@@ -149,7 +150,8 @@ publicly reachable. See [ARCHITECTURE.md](./ARCHITECTURE.md).
   the web client and the backend (Next rewrites, no Route Handlers).
 - Agora-managed keyless OpenAI with `mcp_servers` + `enable_tools` — Agora cloud
   orchestrates the FastMCP `get_time` tool without any OpenAI API key on your end.
-- A **zero-key mock** MCP server so the full pipeline runs with no LLM API key.
+- A **zero-key mock** MCP server mounted in-process so the full pipeline runs
+  with no LLM API key and only one port to expose.
 
 ## How It Works
 
@@ -161,23 +163,24 @@ publicly reachable. See [ARCHITECTURE.md](./ARCHITECTURE.md).
 3. The user speaks. Agora runs STT (Deepgram), then sends the transcript to the
    managed OpenAI LLM.
 4. When the LLM emits a tool call (e.g. `get_time`), Agora cloud issues a
-   streamable-HTTP request to `MCP_ENDPOINT`. The `mcp/` FastMCP server runs the
-   tool and returns the result.
+   streamable-HTTP request to `MCP_ENDPOINT`. The FastMCP server (mounted at
+   `/mcp` in the same process) runs the tool and returns the result.
 5. Agora feeds the tool result back to the LLM, which speaks the reply. Agora
    runs TTS (MiniMax) and plays it back in the channel.
 6. `/api/stopAgent` ends the session.
 
 ### Replacing the mock
 
-Add tools in [`mcp/src/mcp_server.py`](mcp/src/mcp_server.py). Each function
-decorated with `@mcp.tool()` is automatically registered. The mock `get_time`
-tool needs no external credentials — replace or extend it with your own logic.
+Add tools in [`server/src/mcp_server.py`](server/src/mcp_server.py). Each
+function decorated with `@mcp.tool()` is automatically registered. The mock
+`get_time` tool needs no external credentials — replace or extend it with your
+own logic.
 
 ## Repo Map
 
 - `web/` — Next.js frontend (:3000); RTC/RTM lifecycle and UI.
-- `server/` — FastAPI agent backend (:8000); Agora tokens + agent lifecycle, managed OpenAI vendor with `mcp_servers`.
-- `mcp/` — FastMCP streamable-HTTP server (:8001) that Agora cloud calls when the LLM emits a tool call; no `agora-agents` dependency.
+- `server/` — FastAPI agent backend (:8000); Agora tokens + agent lifecycle,
+  managed OpenAI vendor with `mcp_servers`, FastMCP server mounted at `/mcp`.
 - `ARCHITECTURE.md` — system shape and component boundaries.
 - `AGENTS.md` — guide for coding agents working in this repo.
 

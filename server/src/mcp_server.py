@@ -1,12 +1,14 @@
 """MCP server (streamable-HTTP) exposing one mock tool. Agora cloud calls this
-when the LLM emits a tool call. Replace get_time with your own tools."""
+when the LLM emits a tool call. Replace get_time with your own tools.
+
+This module is mounted in-process by server.py at /mcp — it is not run
+standalone. Add your tools here; each @mcp.tool()-decorated function is
+automatically registered with the FastMCP instance."""
 import datetime
-import os
 
 from mcp.server.fastmcp import FastMCP
 
-MCP_PORT = int(os.getenv("MCP_PORT", "8001"))
-mcp = FastMCP("recipe-agent-mcp", host="0.0.0.0", port=MCP_PORT)
+mcp = FastMCP("recipe-agent-mcp")
 
 
 def current_time_message() -> str:
@@ -21,8 +23,3 @@ def get_time() -> str:
     msg = current_time_message()
     print(f"[MCP TOOL CALLED] get_time -> {msg}", flush=True)
     return msg
-
-
-if __name__ == "__main__":
-    print(f"Starting MCP server (streamable-http) on :{MCP_PORT}/mcp", flush=True)
-    mcp.run(transport="streamable-http")
