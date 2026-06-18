@@ -10,7 +10,7 @@ must be public), returns the result, and the LLM speaks it.
 
 - **`server/`** — Python FastAPI agent backend (:8000). Owns Agora token
   generation, agent session lifecycle, **and** the FastMCP server mounted at
-  `/mcp` (same process, same port). SDK: `agora-agents>=2.0.0`
+  `/mcp` (same process, same port). SDK: `agora-agents>=2.3.0`
   (`import agora_agent`).
 - **`web/`** — Next.js frontend (:3000), resynced from the base quickstart with
   MCP branding.
