@@ -25,6 +25,10 @@ the result flows back to the LLM.
 - [Agora CLI](https://github.com/AgoraIO/cli) — makes generating an App ID + App Certificate easy
 - [ngrok](https://ngrok.com/) — the backend (including the `/mcp` endpoint) must be publicly reachable so Agora cloud can call it
 
+The same commands work on macOS, Linux, and Windows. On macOS/Linux, setup uses
+`python3`; on Windows, it uses the Python launcher (`py`) or `python`. WSL and
+virtualenv activation are not required.
+
 ## Run It
 
 ```bash
