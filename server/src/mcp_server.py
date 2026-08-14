@@ -5,10 +5,33 @@ This module is mounted in-process by server.py at /mcp — it is not run
 standalone. Add your tools here; each @mcp.tool()-decorated function is
 automatically registered with the FastMCP instance."""
 import datetime
+import os
+from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
-mcp = FastMCP("recipe-agent-mcp")
+_endpoint = urlparse(os.getenv("MCP_ENDPOINT", ""))
+_public_host = _endpoint.netloc
+_public_origin = f"{_endpoint.scheme}://{_public_host}" if _endpoint.scheme and _public_host else ""
+
+mcp = FastMCP(
+    "recipe-agent-mcp",
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=[
+            "127.0.0.1:*",
+            "localhost:*",
+            "[::1]:*",
+            *([_public_host] if _public_host else []),
+        ],
+        allowed_origins=[
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "http://[::1]:*",
+            *([_public_origin] if _public_origin else []),
+        ],
+    ),
+)
 
 
 def current_time_message() -> str:
