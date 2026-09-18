@@ -14,19 +14,19 @@ Browser
 Next.js  (rewrites /api/* → AGENT_BACKEND_URL)
   ▼
 Agent backend (server/, :8000)
-  │  builds session with OpenAI(mcp_servers=[{endpoint: MCP_ENDPOINT}])
+  │  builds selected OpenAI path with typed McpServerConfig
   │  also serves FastMCP at /mcp (same uvicorn, same port)
   ▼
 Agora ConvoAI Cloud
-  │  user speech → Deepgram STT (managed)
-  │  managed OpenAI LLM (keyless) → emits get_time tool call
+  │  Pipeline: Deepgram STT → managed OpenAI LLM → MiniMax TTS
+  │  Realtime: OpenAI Realtime MLLM
+  │  selected model emits get_time tool call
   │  POST <MCP_ENDPOINT>   (streamable-http transport)
   ▼
 FastMCP server at /mcp (server/, :8000, public via tunnel)
   │  executes get_time() → returns current time string
   ▼
-Agora ConvoAI Cloud → LLM incorporates result → speaks answer
-                     → MiniMax TTS (managed) → user hears speech
+Agora ConvoAI Cloud → selected model incorporates result → user hears speech
                      → RTM transcript / metrics → web UI
 ```
 
@@ -52,8 +52,8 @@ Agora cloud IPs via a gateway.
 In `recipe-agent-tool-calling` the tools run **inside** the `llm/` endpoint:
 the agent's custom LLM proxy intercepts tool calls and handles them locally. In
 this recipe Agora cloud orchestrates the tools via the MCP protocol — the
-managed OpenAI vendor issues the tool call, Agora invokes `MCP_ENDPOINT`, and
-the result flows back to the LLM.
+selected OpenAI path issues the tool call, Agora invokes `MCP_ENDPOINT`, and the
+result flows back to the model.
 
 ## API (agent backend, port 8000)
 
@@ -74,4 +74,6 @@ The browser calls the first three as `/api/*`; Next rewrites them to
   `AGORA_APP_CERTIFICATE`.
 - Agora cloud → MCP server: streamable-http (no auth on the mock; add it for
   production use).
-- OpenAI: Agora-managed (keyless) — `OPENAI_API_KEY` is optional.
+- OpenAI Pipeline: Agora-managed by default; optional BYO uses
+  `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
+- OpenAI Realtime: `OPENAI_REALTIME_API_KEY` is required.

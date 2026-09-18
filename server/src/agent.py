@@ -1,37 +1,47 @@
 """
 Agent — MCP Recipe
 
-High-level API for managing Agora Conversational AI Agents with managed OpenAI
-and MCP tool calling. Agora cloud orchestrates the MCP server — the managed
-OpenAI LLM emits a tool call, Agora invokes the separate mcp/ server (public
-MCP_ENDPOINT), returns the result, and the LLM speaks it.
+High-level API for managing Agora Conversational AI Agents with OpenAI Pipeline
+or Realtime MCP tool calling. Agora cloud orchestrates the MCP server: the model
+emits a tool call, Agora invokes the public MCP_ENDPOINT, returns the result,
+and the model speaks it.
 
-OPENAI_API_KEY is optional — Agora manages the OpenAI key (keyless).
+Pipeline mode is managed by default and optionally accepts BYO OpenAI credentials.
+OPENAI_REALTIME_API_KEY is required only for Realtime mode.
 MCP_ENDPOINT must be PUBLIC — Agora cloud (not this server) calls it.
 """
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from agora_agent import Area, AsyncAgora
 from agora_agent.agentkit import Agent as AgoraAgent
-from agora_agent.agentkit.vendors import OpenAI, DeepgramSTT, MiniMaxTTS
+from agora_agent.agentkit.vendors import (
+    DeepgramSTT,
+    MiniMaxTTS,
+    OpenAI,
+    OpenAIRealtime,
+)
 from mcp_config import build_mcp_servers
 
 logger = logging.getLogger("uvicorn.error")
 
 AGENT_GREETING = "Hi! Ask me what time it is."
+AGENT_INSTRUCTIONS = (
+    "You are a helpful voice assistant. When the user asks what time it is, "
+    "you MUST call the get_time tool, then say the time out loud. Do not guess."
+)
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1/chat/completions"
+AgentMode = Literal["pipeline", "realtime"]
 
 
 class Agent:
     """
-    High-level wrapper for Agora Conversational AI Agent with managed OpenAI
-    and MCP tool calling.
+    High-level wrapper for an Agora agent with Pipeline or Realtime MCP tools.
 
-    The managed OpenAI vendor is keyless — Agora handles the API key. When the
-    user asks what time it is, the LLM emits a tool call, Agora invokes the
-    mcp/ server at MCP_ENDPOINT, and the result is returned to the LLM so it
-    can speak the answer.
+    When the user asks what time it is, the selected model emits a tool call,
+    Agora invokes the mcp/ server at MCP_ENDPOINT, and the result is returned
+    to the model so it can speak the answer.
 
     IMPORTANT: MCP_ENDPOINT must be publicly accessible for the Agora
     Conversational AI Engine (cloud) to reach the mcp/ server. For local
@@ -44,9 +54,14 @@ class Agent:
         self.app_certificate = os.getenv("AGORA_APP_CERTIFICATE")
         self.greeting = os.getenv("AGENT_GREETING", AGENT_GREETING)
 
-        # OpenAI is Agora-managed (keyless). OPENAI_API_KEY optional.
+        # Pipeline is managed unless BYO credentials are supplied.
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.openai_base_url = os.getenv("OPENAI_BASE_URL")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.openai_realtime_api_key = os.getenv("OPENAI_REALTIME_API_KEY")
+        self.openai_realtime_model = os.getenv(
+            "OPENAI_REALTIME_MODEL", "gpt-realtime"
+        )
         # MCP_ENDPOINT must be PUBLIC — Agora cloud calls the mcp/ server directly.
         self.mcp_endpoint = os.getenv("MCP_ENDPOINT")
         if not self.mcp_endpoint:
@@ -73,28 +88,21 @@ class Agent:
         agent_uid: int,
         user_uid: int,
         output_audio_codec: Optional[str] = None,
+        agent_mode: AgentMode = "pipeline",
     ) -> Dict[str, Any]:
-        """Start agent with managed OpenAI + MCP tool calling."""
+        """Start a Pipeline or Realtime agent with MCP tool calling."""
         if not channel_name or not str(channel_name).strip():
             raise ValueError("channel_name is required and cannot be empty")
         if agent_uid <= 0:
             raise ValueError("agent_uid is required and cannot be empty")
         if user_uid <= 0:
             raise ValueError("user_uid is required and cannot be empty")
+        if agent_mode not in ("pipeline", "realtime"):
+            raise ValueError("agent_mode must be 'pipeline' or 'realtime'")
+        if agent_mode == "realtime" and not self.openai_realtime_api_key:
+            raise ValueError("OPENAI_REALTIME_API_KEY is required for realtime mode")
 
-        llm = OpenAI(
-            api_key=self.openai_api_key,
-            model=self.openai_model,
-            system_messages=[{"role": "system", "content": (
-                "You are a helpful voice assistant. When the user asks what time it is, "
-                "you MUST call the get_time tool, then say the time out loud. Do not guess."
-            )}],
-            mcp_servers=build_mcp_servers(self.mcp_endpoint),
-            greeting_message=self.greeting,
-        )
-
-        stt = DeepgramSTT(model="nova-3", language="en")
-        tts = MiniMaxTTS(model="speech_2_6_turbo", voice_id="English_captivating_female1")
+        mcp_servers = build_mcp_servers(self.mcp_endpoint)
 
         parameters = {
             "audio_scenario": "chorus",  # web client — ultra-low-latency chorus profile
@@ -105,12 +113,16 @@ class Agent:
         if isinstance(output_audio_codec, str) and output_audio_codec.strip():
             parameters["output_audio_codec"] = output_audio_codec.strip()
 
-        agora_agent = AgoraAgent(
-            client=self.client,
-            greeting=self.greeting,
-            failure_message="Please wait a moment.",
-            max_history=50,
-            turn_detection={
+        agent_options = {
+            "client": self.client,
+            "greeting": self.greeting,
+            "failure_message": "Please wait a moment.",
+            "max_history": 50,
+            "advanced_features": {"enable_rtm": True},
+            "parameters": parameters,
+        }
+        if agent_mode == "pipeline":
+            agent_options["turn_detection"] = {
                 "config": {
                     "speech_threshold": 0.5,
                     "start_of_speech": {
@@ -127,17 +139,41 @@ class Agent:
                         },
                     },
                 },
-            },
-            advanced_features={"enable_rtm": True, "enable_tools": True},
-            parameters=parameters,
-        )
+            }
+        agora_agent = AgoraAgent(**agent_options)
 
-        agora_agent = (
-            agora_agent
-            .with_stt(stt)
-            .with_llm(llm)
-            .with_tts(tts)
-        )
+        if agent_mode == "pipeline":
+            llm_options = {
+                "model": self.openai_model,
+                "system_messages": [{"role": "system", "content": AGENT_INSTRUCTIONS}],
+                "mcp_servers": mcp_servers,
+                "greeting_message": self.greeting,
+            }
+            if self.openai_api_key:
+                llm_options["api_key"] = self.openai_api_key
+                llm_options["base_url"] = (
+                    self.openai_base_url or DEFAULT_OPENAI_BASE_URL
+                )
+            llm = OpenAI(**llm_options)
+            stt = DeepgramSTT(model="nova-3", language="en")
+            tts = MiniMaxTTS(
+                model="speech_2_6_turbo",
+                voice_id="English_captivating_female1",
+            )
+            agora_agent = (
+                agora_agent.with_stt(stt).with_llm(llm).with_tts(tts).with_tools()
+            )
+        else:
+            mllm = OpenAIRealtime(
+                api_key=self.openai_realtime_api_key,
+                model=self.openai_realtime_model,
+                instructions=AGENT_INSTRUCTIONS,
+                greeting_message=self.greeting,
+                failure_message="Please wait a moment.",
+                turn_detection={"mode": "server_vad"},
+                mcp_servers=mcp_servers,
+            )
+            agora_agent = agora_agent.with_mllm(mllm).with_tools()
 
         session = agora_agent.create_async_session(
             channel=channel_name,
@@ -149,10 +185,11 @@ class Agent:
         )
 
         logger.info(
-            "Starting MCP agent channel=%s agent_uid=%s user_uid=%s mcp_endpoint=%s",
+            "Starting MCP agent channel=%s agent_uid=%s user_uid=%s mode=%s mcp_endpoint=%s",
             channel_name,
             agent_uid,
             user_uid,
+            agent_mode,
             self.mcp_endpoint,
         )
 
@@ -180,6 +217,7 @@ class Agent:
             "agent_id": agent_id,
             "channel_name": channel_name,
             "status": "started",
+            "agent_mode": agent_mode,
         }
 
     async def stop(self, agent_id: str) -> None:

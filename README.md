@@ -4,19 +4,22 @@
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/)
 [![Bun](https://img.shields.io/badge/bun-latest-black)](https://bun.sh/)
 
-The **mcp** recipe in the Agora Conversational AI recipes family. The managed
-keyless OpenAI vendor emits a tool call, Agora invokes the FastMCP server
-mounted at `/mcp` in the same backend process, returns the result, and the LLM
-speaks it. STT (Deepgram) and TTS (MiniMax) stay Agora-managed.
+The **mcp** recipe in the Agora Conversational AI recipes family. An OpenAI
+Pipeline or Realtime model emits a tool call, Agora invokes the FastMCP server
+mounted at `/mcp` in the same backend process, returns the result, and the model
+speaks it.
 
-This recipe is **zero-key**: OpenAI is Agora-managed (no `OPENAI_API_KEY`
-needed), and the tool is a mock (`get_time`) that needs no external credentials.
-Replace it with your own tools in `server/src/mcp_server.py`.
+Pipeline mode is **zero-key by default** because OpenAI, Deepgram STT, and
+MiniMax TTS are Agora-managed. Set `OPENAI_API_KEY` to use your own OpenAI
+credentials, and optionally override `OPENAI_BASE_URL` for a compatible
+endpoint. Realtime mode uses the separate `OPENAI_REALTIME_API_KEY`. The mock
+`get_time` tool needs no external credentials; replace it in
+`server/src/mcp_server.py`.
 
 **Distinct from `recipe-agent-tool-calling`**: in that recipe the tools run
 inside the `llm/` endpoint. Here Agora orchestrates them via the MCP protocol —
-the managed OpenAI vendor issues a tool call, Agora invokes `MCP_ENDPOINT`, and
-the result flows back to the LLM.
+the selected OpenAI path issues a tool call, Agora invokes `MCP_ENDPOINT`, and
+the result flows back to the model.
 
 ## Prerequisites
 
@@ -93,8 +96,11 @@ Backend env file: [`server/.env.example`](server/.env.example).
 | `AGORA_APP_ID` | Yes | — | Agora Console → Project → App ID |
 | `AGORA_APP_CERTIFICATE` | Yes | — | Agora Console → Project → App Certificate |
 | `MCP_ENDPOINT` | Yes | — | **Public** URL of the `/mcp` endpoint (e.g. `https://<tunnel>/mcp`). Agora cloud calls it; cannot be `localhost`. |
-| `OPENAI_MODEL` | | `gpt-4o-mini` | Model name for the managed OpenAI vendor |
-| `OPENAI_API_KEY` | | — | Optional — Agora manages the OpenAI key (keyless by default) |
+| `OPENAI_MODEL` | | `gpt-4o-mini` | Pipeline model |
+| `OPENAI_API_KEY` | | — | Optional Pipeline BYO API key; omit for Agora-managed mode |
+| `OPENAI_BASE_URL` | | OpenAI chat completions URL | Optional OpenAI-compatible Pipeline endpoint override |
+| `OPENAI_REALTIME_API_KEY` | Realtime only | — | OpenAI API key for Realtime mode |
+| `OPENAI_REALTIME_MODEL` | | `gpt-realtime` | OpenAI Realtime model |
 | `AGENT_GREETING` | | built-in | Optional opening line override |
 | `PORT` | | `8000` | Agent backend port |
 | `AGENT_BACKEND_URL` (web deploy) | Yes (deploy) | — | Required when deploying `web` |
@@ -124,18 +130,19 @@ Browser (localhost:3000)
   │  fetch /api/*
   ▼
 Next.js  ──rewrite──▶  Agent backend  (server/, localhost:8000)
-                          │  starts agent session (OpenAI vendor + mcp_servers)
+                          │  starts selected OpenAI path + typed mcp_servers
                           │  also serves FastMCP at /mcp (same process)
                           ▼
                        Agora ConvoAI Cloud
-                          │  user speech → Deepgram STT (managed)
-                          │  OpenAI LLM (managed, keyless) → emits tool call
+                          │  Pipeline: Deepgram → OpenAI LLM → MiniMax
+                          │  Realtime: OpenAI Realtime MLLM
+                          │  selected model emits tool call
                           │  POST <MCP_ENDPOINT>   (streamable-http)
                           ▼
                        FastMCP server at /mcp  (same process, same port)
-                          │  returns tool result → LLM speaks it
+                          │  returns tool result → selected model speaks it
                           ▼
-                       Agora ConvoAI Cloud → MiniMax TTS (managed) → user hears speech
+                       Agora ConvoAI Cloud → user hears speech
                                           → RTM transcript / metrics → web UI
 ```
 
@@ -152,25 +159,25 @@ both. See [ARCHITECTURE.md](./ARCHITECTURE.md).
   agent session lifecycle.
 - The `/api/get_config` · `/api/startAgent` · `/api/stopAgent` contract between
   the web client and the backend (Next rewrites, no Route Handlers).
-- Agora-managed keyless OpenAI with `mcp_servers` + `enable_tools` — Agora cloud
-  orchestrates the FastMCP `get_time` tool without any OpenAI API key on your end.
-- A **zero-key mock** MCP server mounted in-process so the full pipeline runs
+- Selectable managed OpenAI Pipeline and OpenAI Realtime MLLM paths with typed
+  `mcp_servers` configuration and tool execution enabled.
+- A **zero-key mock** MCP server mounted in-process; default Pipeline mode runs
   with no LLM API key and only one port to expose.
 
 ## How It Works
 
 1. The browser calls `/api/get_config`, which Next rewrites to the backend; the
    backend mints an Agora token from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`.
-2. The browser joins the RTC channel, then calls `/api/startAgent`; the backend
-   starts an agent session using the managed `OpenAI` vendor with `mcp_servers`
-   pointing at the public `MCP_ENDPOINT`.
-3. The user speaks. Agora runs STT (Deepgram), then sends the transcript to the
-   managed OpenAI LLM.
-4. When the LLM emits a tool call (e.g. `get_time`), Agora cloud issues a
+2. The browser joins the RTC channel, then calls `/api/startAgent` with
+   `agentMode`; the backend attaches `mcp_servers` to managed OpenAI in Pipeline
+   mode or OpenAI Realtime MLLM in Realtime mode.
+3. Pipeline mode uses managed Deepgram STT and MiniMax TTS. Realtime mode handles
+   audio directly in the MLLM.
+4. When the model emits a tool call (e.g. `get_time`), Agora cloud issues a
    streamable-HTTP request to `MCP_ENDPOINT`. The FastMCP server (mounted at
    `/mcp` in the same process) runs the tool and returns the result.
-5. Agora feeds the tool result back to the LLM, which speaks the reply. Agora
-   runs TTS (MiniMax) and plays it back in the channel.
+5. Agora feeds the tool result back to the model. Pipeline mode uses MiniMax TTS
+   for the reply; Realtime mode speaks it directly.
 6. `/api/stopAgent` ends the session.
 
 ### Replacing the mock
@@ -180,11 +187,15 @@ function decorated with `@mcp.tool()` is automatically registered. The mock
 `get_time` tool needs no external credentials — replace or extend it with your
 own logic.
 
+To verify tool arguments in either mode, ask "What time is it in 12-hour
+format?" and then "Tell me in 24-hour format." The backend logs the selected
+`time_format` and the returned server time.
+
 ## Repo Map
 
 - `web/` — Next.js frontend (:3000); RTC/RTM lifecycle and UI.
 - `server/` — FastAPI agent backend (:8000); Agora tokens + agent lifecycle,
-  managed OpenAI vendor with `mcp_servers`, FastMCP server mounted at `/mcp`.
+  selectable OpenAI paths with `mcp_servers`, FastMCP server mounted at `/mcp`.
 - `ARCHITECTURE.md` — system shape and component boundaries.
 - `AGENTS.md` — guide for coding agents working in this repo.
 

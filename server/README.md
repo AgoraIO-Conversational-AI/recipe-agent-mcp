@@ -6,13 +6,11 @@ the mcp recipe. It is the service the web client reaches through the Next.js
 
 ## What's different from the base quickstart
 
-The LLM stage uses the SDK's managed `OpenAI` vendor (keyless — Agora manages
-the OpenAI key) with `mcp_servers` pointing at the public `MCP_ENDPOINT`. When
-the LLM emits a tool call, Agora cloud POSTs to `MCP_ENDPOINT` (streamable-http
-transport), receives the tool result, and the LLM speaks it. The FastMCP server
-is mounted at `/mcp` in this same process — no separate service or port needed.
-There is no `llm/` endpoint in this recipe. STT (Deepgram) and TTS (MiniMax)
-remain Agora-managed.
+The SDK attaches typed `mcp_servers` configuration to managed `OpenAI` in the
+default Pipeline mode or to `OpenAIRealtime` in Realtime mode. When the model
+emits a tool call, Agora cloud POSTs to `MCP_ENDPOINT` (streamable-http
+transport), receives the result, and the model speaks it. The FastMCP server is
+mounted at `/mcp` in this same process — no separate service or port needed.
 
 ## Run
 
@@ -37,16 +35,20 @@ bun run backend
   `localhost`. Use `ngrok http 8000` to expose the backend publicly.
 
 Optional:
-- `OPENAI_MODEL` (default `gpt-4o-mini`) — model name for the managed vendor.
-- `OPENAI_API_KEY` — Agora manages the key by default; set this only if you
-  want to supply your own.
+- `OPENAI_MODEL` (default `gpt-4o-mini`) — Pipeline model name.
+- `OPENAI_API_KEY` — optional Pipeline BYO credential; omit it to use the
+  Agora-managed vendor.
+- `OPENAI_BASE_URL` — optional Pipeline endpoint override. It defaults to
+  OpenAI's chat completions endpoint when a BYO key is set.
+- `OPENAI_REALTIME_API_KEY` — required for Realtime mode.
+- `OPENAI_REALTIME_MODEL` (default `gpt-realtime`) — Realtime model.
 - `AGENT_GREETING` — override the agent's opening line.
 - `PORT` (default `8000`) — agent backend port.
 
 ## API
 
 - `GET /get_config` — token + channel/UID config
-- `POST /startAgent` — start an agent session
+- `POST /startAgent` — start an agent session; `agentMode` is `pipeline` or `realtime`
 - `POST /stopAgent` — stop an agent session
 
 The repo-root `bun run verify:web:api` exercises these routes through the Next
@@ -58,6 +60,6 @@ session is required.
 | File | Purpose |
 | --- | --- |
 | `src/server.py` | FastAPI app, routes |
-| `src/agent.py` | Agent wrapper — OpenAI vendor + mcp_servers config |
-| `src/mcp_config.py` | Pure builder for the `mcp_servers` list (testable) |
+| `src/agent.py` | Pipeline/Realtime agent modes + MCP tool execution |
+| `src/mcp_config.py` | Typed `McpServerConfig` builder |
 | `src/mcp_server.py` | FastMCP server with tools; mounted at `/mcp` in `server.py` |
