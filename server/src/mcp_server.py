@@ -6,6 +6,7 @@ standalone. Add your tools here; each @mcp.tool()-decorated function is
 automatically registered with the FastMCP instance."""
 import datetime
 import os
+from typing import Literal
 from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
@@ -34,15 +35,16 @@ mcp = FastMCP(
 )
 
 
-def current_time_message() -> str:
+def current_time_message(time_format: Literal["12-hour", "24-hour"] = "24-hour") -> str:
     """Pure, testable helper: the message the get_time tool returns."""
-    now = datetime.datetime.now().strftime("%H:%M:%S")
+    pattern = "%I:%M:%S %p" if time_format == "12-hour" else "%H:%M:%S"
+    now = datetime.datetime.now().strftime(pattern)
     return f"The current server time is {now}."
 
 
 @mcp.tool()
-def get_time() -> str:
-    """Return the current server time. Call this when the user asks what time it is."""
-    msg = current_time_message()
-    print(f"[MCP TOOL CALLED] get_time -> {msg}", flush=True)
+def get_time(time_format: Literal["12-hour", "24-hour"] = "24-hour") -> str:
+    """Return the current server time in the requested 12-hour or 24-hour format."""
+    msg = current_time_message(time_format)
+    print(f"[MCP TOOL CALLED] get_time format={time_format} -> {msg}", flush=True)
     return msg

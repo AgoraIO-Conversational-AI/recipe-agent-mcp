@@ -2,20 +2,21 @@
 
 For coding agents working in `recipe-agent-mcp`. This repository is the **mcp**
 recipe (`Recipe Role: mcp`) in the Agora Conversational AI recipes family.
-The managed keyless OpenAI vendor emits a tool call, Agora invokes the FastMCP
-server mounted at `/mcp` in the same backend process (at `MCP_ENDPOINT`, which
-must be public), returns the result, and the LLM speaks it.
+An OpenAI Pipeline or Realtime model emits a tool call, Agora invokes the
+FastMCP server mounted at `/mcp` in the same backend process (at `MCP_ENDPOINT`,
+which must be public), returns the result, and the model speaks it.
 
 ## System shape
 
 - **`server/`** — Python FastAPI agent backend (:8000). Owns Agora token
   generation, agent session lifecycle, **and** the FastMCP server mounted at
-  `/mcp` (same process, same port). SDK: `agora-agents>=2.3.0`
+  `/mcp` (same process, same port). SDK: `agora-agents>=2.10.0`
   (`import agora_agent`).
 - **`web/`** — Next.js frontend (:3000), resynced from the base quickstart with
   MCP branding.
-- Auth: Token007 from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`. OpenAI is
-  Agora-managed (keyless). `OPENAI_API_KEY` is optional.
+- Auth: Token007 from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`. Pipeline mode is
+  Agora-managed by default and supports optional `OPENAI_API_KEY` /
+  `OPENAI_BASE_URL`; Realtime requires `OPENAI_REALTIME_API_KEY`.
 
 ## Routing / ownership
 
@@ -42,7 +43,10 @@ must be public), returns the result, and the LLM speaks it.
 - Keep `server/src/mcp_server.py` free of `agora-agents` — it is a standalone
   MCP module imported into `server.py` and mounted via `app.mount("/", ...)`.
 - `MCP_ENDPOINT` is required and must be public; there is no localhost default.
-- `OPENAI_API_KEY` is optional — Agora manages it (keyless).
+- Use typed `McpServerConfig`; omit transport to exercise the SDK's
+  `streamable_http` default.
+- `OPENAI_API_KEY` and `OPENAI_BASE_URL` are optional Pipeline BYO settings;
+  `OPENAI_REALTIME_API_KEY` is required only for Realtime mode.
 - Use `ngrok http 8000` (not 8001) — the MCP endpoint is now on the same port as
   the token APIs.
 
